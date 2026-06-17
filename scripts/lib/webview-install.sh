@@ -20,6 +20,10 @@ extract_webview() {
         if [ -f "$webview_index" ]; then
             sed -i 's/--startup-background: transparent/--startup-background: #1e1e1e/' "$webview_index"
         fi
+        # Record the asar fingerprint so start.sh can detect stale content/webview.
+        if [ -n "${CODEX_ASAR_FINGERPRINT:-}" ]; then
+            printf '%s\n' "$CODEX_ASAR_FINGERPRINT" > "$INSTALL_DIR/content/webview/.asar-fingerprint"
+        fi
         info "Webview files copied"
     else
         warn "Webview directory not found in asar — app may not work"

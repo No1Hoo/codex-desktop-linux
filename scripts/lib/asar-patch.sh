@@ -107,6 +107,18 @@ patch_asar() {
     npx asar pack app-extracted app.asar --ordering "$WORK_DIR/app.asar.ordering" --unpack "{*.node,*.so,*.dylib}" 2>/dev/null
 
     info "app.asar patched"
+
+    # Record the patched asar fingerprint so extract_webview / start.sh can
+    # verify content/webview/ is in sync with the asar.
+    local asar_for_stamp="$WORK_DIR/app.asar"
+    if [ -f "$asar_for_stamp" ]; then
+        local asar_size
+        asar_size=$(stat -c%s "$asar_for_stamp" 2>/dev/null || stat -f%z "$asar_for_stamp" 2>/dev/null || echo "0")
+        # Lightweight fingerprint: size + first 4KB sha256.
+        local asar_head_hash
+        asar_head_hash=$(head -c 4096 "$asar_for_stamp" | sha256sum | cut -d' ' -f1)
+        CODEX_ASAR_FINGERPRINT="${asar_size}:${asar_head_hash}"
+    fi
 }
 
 inspect_rebuild_candidate() {

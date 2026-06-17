@@ -2020,6 +2020,42 @@ ensure_webview_server() {
         return 0
     fi
 
+    # Verify content/webview is in sync with app.asar.
+    # If the asar was rebuilt (e.g. by install.sh or update-manager) without
+    # re-running extract_webview, the HTTP server would serve stale files.
+    local asar_file="$SCRIPT_DIR/resources/app.asar"
+    local fingerprint_file="$WEBVIEW_DIR/.asar-fingerprint"
+    if [ -f "$asar_file" ]; then
+        local asar_mtime webview_mtime=0
+        asar_mtime=$(stat -c%Y "$asar_file" 2>/dev/null || stat -f%m "$asar_file" 2>/dev/null || echo 0)
+        if [ -f "$fingerprint_file" ]; then
+            webview_mtime=$(stat -c%Y "$fingerprint_file" 2>/dev/null || stat -f%m "$fingerprint_file" 2>/dev/null || echo 0)
+        fi
+        if [ "$asar_mtime" -gt "$webview_mtime" ] 2>/dev/null; then
+            echo "[WARN] content/webview may be stale (asar is newer); re-syncing from asar..."
+            local tmp_extract
+            tmp_extract=$(mktemp -d 2>/dev/null || echo "/tmp/codex-webview-sync.$$")
+            if command -v npx >/dev/null 2>&1; then
+                npx --yes asar extract "$asar_file" "$tmp_extract" 2>/dev/null
+                if [ -d "$tmp_extract/webview" ]; then
+                    rm -rf "$WEBVIEW_DIR"
+                    cp -r "$tmp_extract/webview" "$WEBVIEW_DIR"
+                    # Re-apply Linux-specific overrides
+                    if [ -f "$WEBVIEW_DIR/index.html" ]; then
+                        sed -i 's/--startup-background: transparent/--startup-background: #1e1e1e/' "$WEBVIEW_DIR/index.html"
+                    fi
+                    # Record new fingerprint
+                    local asar_size asar_head_hash
+                    asar_size=$(stat -c%s "$asar_file" 2>/dev/null || stat -f%z "$asar_file" 2>/dev/null || echo "0")
+                    asar_head_hash=$(head -c 4096 "$asar_file" | sha256sum | cut -d' ' -f1)
+                    printf '%s:%s\n' "$asar_size" "$asar_head_hash" > "$fingerprint_file"
+                    echo "[INFO] content/webview re-synced from asar"
+                fi
+            fi
+            rm -rf "$tmp_extract"
+        fi
+    fi
+
     if adopt_existing_webview_server; then
         if webview_origin_is_reachable; then
             echo "Reusing existing verified webview server on :$CODEX_LINUX_WEBVIEW_PORT"
