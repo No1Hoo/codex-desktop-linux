@@ -117,7 +117,8 @@ function applyBrowserUseNodeReplApprovalPatch(currentSource) {
 }
 
 function applyLinuxBrowserUseRouteLivenessPatch(currentSource) {
-  if (currentSource.includes("codexLinuxResolveLiveBrowserUseRouteWindow")) {
+  if (currentSource.includes("codexLinuxResolveLiveBrowserUseRouteWindow") &&
+      currentSource.includes("codexLinuxResolveFocusedOwnerWindow")) {
     return currentSource;
   }
 
@@ -156,7 +157,46 @@ function applyLinuxBrowserUseRouteLivenessPatch(currentSource) {
   const helper = `function codexLinuxResolveLiveBrowserUseRouteWindow(e,t,n,r){if(process.platform!==\`linux\`)return null;let o=r.BrowserWindow.fromId(t);if(o!=null&&!o.isDestroyed()&&!o.webContents.isDestroyed())return e(o,o.webContents);let s=n.get(t)??null;return s!=null&&!s.window.isDestroyed()&&!s.owner.isDestroyed()?s:null}`;
   const replacement = `${helper}function ${functionName}({ensureWindowState:${ensureWindowStateVar},windowId:${windowIdVar},windows:${windowsVar}}){let ${stateVar}=${windowsVar}.get(${windowIdVar})??null;if(${stateVar}==null){let ${browserWindowVar}=${electronVar}.BrowserWindow.fromId(${windowIdVar});${browserWindowVar}!=null&&!${browserWindowVar}.isDestroyed()&&!${browserWindowVar}.webContents.isDestroyed()&&(${stateVar}=${ensureWindowStateVar}(${browserWindowVar},${browserWindowVar}.webContents))}${stateVar}==null&&(${stateVar}=codexLinuxResolveLiveBrowserUseRouteWindow(${ensureWindowStateVar},${windowIdVar},${windowsVar},${electronVar}));return ${stateVar}==null||${stateVar}.window.isDestroyed()||${stateVar}.owner.isDestroyed()?(${loggerVar}().warning(\`IAB_LIFECYCLE route window is not live\`,{safe:{hasWindowState:${stateVar}!=null,ownerDestroyed:${stateVar}?.owner.isDestroyed()??null,windowDestroyed:${stateVar}?.window.isDestroyed()??null,windowId:${windowIdVar}},sensitive:{}}),null):${stateVar}}`;
 
-  return currentSource.replace(original, replacement);
+  let patchedSource = currentSource.replace(original, replacement);
+
+  // ---- Patch 2: Fix LJ (getFocusedOwnerWebContents) ----
+  // LJ uses getAllWindows().filter().length===1 to guess the owner window,
+  // which picks the wrong window when hidden Electron windows exist (crashpad,
+  // gpu, clipboard). On Linux this triggers IAB_LIFECYCLE rebound loops.
+  // Fix: remove the length===1 shortcut; use lastSyncedWindowId and windows Map.
+  const focusedOwnerPattern =
+    /function ([A-Za-z_$][\w$]*)\(\{getLiveWindowState:([A-Za-z_$][\w$]*),lastSyncedWindowId:([A-Za-z_$][\w$]*),windows:([A-Za-z_$][\w$]*)\}\)\{let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.BrowserWindow\.getFocusedWindow\(\);if\(\5!=null&&!\5\.isDestroyed\(\)\)return \5\.webContents;let ([A-Za-z_$][\w$]*)=\6\.BrowserWindow\.getAllWindows\(\)\.filter\(([A-Za-z_$][\w$]*)=>!\8\.isDestroyed\(\)\);if\(\7\.length===1\)return \7\[0\]\?\.webContents\?\?null;/u;
+
+  const focusedOwnerMatch = currentSource.match(focusedOwnerPattern);
+  if (focusedOwnerMatch == null) {
+    if (
+      currentSource.includes("getLiveWindowState") &&
+      currentSource.includes("getAllWindows") &&
+      currentSource.includes(".length===1")
+    ) {
+      console.warn(
+        "WARN: Could not find Browser Use focused owner helper — skipping Linux focused owner fallback patch",
+      );
+    }
+    return patchedSource;
+  }
+
+  const [
+    focusedOwnerOriginal,
+    focusedOwnerFnName,
+    getLiveWindowStateVar,
+    lastSyncedWindowIdVar,
+    focusedOwnerWindowsVar,
+    focusedVar,
+    focusedElectronVar,
+    _allWindowsVar,
+    _filterVar,
+  ] = focusedOwnerMatch;
+
+  const focusedOwnerHelper = `function codexLinuxResolveFocusedOwnerWindow(e,t,n){if(process.platform!==\`linux\`)return null;if(t!=null){let r=e(t);if(r!=null&&!r.window.isDestroyed()&&!r.owner.isDestroyed())return r.owner}for(let r of n){let n=e(r.window.id);if(n!=null&&!n.window.isDestroyed()&&!n.owner.isDestroyed())return n.owner}return null}`;
+  const focusedOwnerReplacement = `${focusedOwnerHelper}function ${focusedOwnerFnName}({getLiveWindowState:${getLiveWindowStateVar},lastSyncedWindowId:${lastSyncedWindowIdVar},windows:${focusedOwnerWindowsVar}}){let ${focusedVar}=${focusedElectronVar}.BrowserWindow.getFocusedWindow();if(${focusedVar}!=null&&!${focusedVar}.isDestroyed())return ${focusedVar}.webContents;if(${lastSyncedWindowIdVar}!=null){let n=${getLiveWindowStateVar}(${lastSyncedWindowIdVar});if(n!=null)return n.owner}${focusedVar}==null&&(${focusedVar}=codexLinuxResolveFocusedOwnerWindow(${getLiveWindowStateVar},${lastSyncedWindowIdVar},${focusedOwnerWindowsVar}));if(${focusedVar}!=null)return ${focusedVar};for(let t of ${focusedOwnerWindowsVar}){let n=${getLiveWindowStateVar}(t.window.id);if(n!=null)return n.owner}return null}`;
+
+  return patchedSource.replace(focusedOwnerOriginal, focusedOwnerReplacement);
 }
 
 function applyLinuxChromeExtensionStatusPatch(currentSource) {
